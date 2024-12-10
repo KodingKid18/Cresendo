@@ -1,0 +1,410 @@
+import os
+import pygame
+import numpy as np
+import tkinter as tk
+from tkinter import ttk, filedialog
+import librosa
+import soundfile as sf
+import tempfile
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from scipy import signal
+import threading
+
+
+class MusicGenerator(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        
+        # Window setup
+        self.title("Cresendo")
+        self.geometry("1920x1080")
+        
+        # Initialize audio
+        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=4096)
+        
+        # Initialize variables
+        self.sample_rate = 44100
+        self.vocal_data = None
+        self.music_data = None
+        self.full_mix = None
+        self.tempo = 120
+        
+        # Create main frame
+        self.main_frame = ttk.Frame(self)
+        self.main_frame.pack(expand=True, fill='both', padx=10, pady=10)
+        
+        # Initialize GUI components
+        self.setup_gui()
+        
+        # Status variable
+        self.status_var = tk.StringVar(value="Ready")
+        ttk.Label(self.main_frame, textvariable=self.status_var, relief='sunken').pack(fill='x', padx=5, pady=5)
+
+    def setup_gui(self):
+        # Control Section
+        control_frame = ttk.LabelFrame(self.main_frame, text="Controls", padding=10)
+        control_frame.pack(fill='x', padx=5, pady=5)
+
+        # Load button
+        ttk.Button(control_frame, text="Load MP3/WAV", 
+                  command=self.load_vocals).pack(side='left', padx=5)
+
+        # Style selection
+        ttk.Label(control_frame, text="Style:").pack(side='left', padx=5)
+        self.style_var = tk.StringVar(value="pop")
+        style_combo = ttk.Combobox(control_frame, textvariable=self.style_var,
+                                 values=["pop", "rock", "electronic"])
+        style_combo.pack(side='left', padx=5)
+
+        # Generate button
+        ttk.Button(control_frame, text="Generate Music",
+                  command=self.generate_music).pack(side='left', padx=5)
+
+        # Playback Section
+        playback_frame = ttk.LabelFrame(self.main_frame, text="Playback", padding=10)
+        playback_frame.pack(fill='x', padx=5, pady=5)
+
+        # Playback buttons
+        buttons = [
+            
+            ("Save Mix", self.save_mix)
+        ]
+
+        for text, command in buttons:
+            ttk.Button(playback_frame, text=text, 
+                      command=command).pack(side='left', padx=5)
+
+        # Visualization Section
+        viz_frame = ttk.LabelFrame(self.main_frame, text="Visualization", padding=10)
+        viz_frame.pack(fill='both', expand=True, padx=5, pady=5)
+
+        self.fig, (self.ax1, self.ax2) = plt.subplots(2, 1, figsize=(10, 6))
+        self.canvas = FigureCanvasTkAgg(self.fig, viz_frame)
+        self.canvas.get_tk_widget().pack(fill='both', expand=True)
+
+    def create_chord_progression(self, duration, base_freq):
+        """Create a musical chord progression"""
+        samples = np.linspace(0, duration, int(self.sample_rate * duration))
+        chord_progression = np.zeros_like(samples, dtype=float)
+        
+        # Define chord progressions (I-IV-V-I)
+        chord_intervals = [
+            [1, 1.25, 1.5],        # I  (major chord)
+            [1.333, 1.667, 2],     # IV (major chord)
+            [1.5, 1.875, 2.25],    # V  (major chord)
+            [1, 1.25, 1.5]         # I  (major chord)
+        ]
+        
+        chord_duration = duration / 4  # 4 chords
+        for i, chord in enumerate(chord_intervals):
+            start = int(i * chord_duration * self.sample_rate)
+            end = int((i + 1) * chord_duration * self.sample_rate)
+            
+            if end > len(samples):
+                end = len(samples)
+            
+            t = np.linspace(0, chord_duration, end - start)
+            chord_wave = np.zeros_like(t)
+            
+            # Generate each note in the chord
+            for interval in chord:
+                freq = base_freq * interval
+                chord_wave += 0.2 * np.sin(2 * np.pi * freq * t)
+            
+            # Apply envelope to avoid clicking
+            envelope = np.ones_like(chord_wave)
+            attack = int(0.01 * self.sample_rate)
+            release = int(0.01 * self.sample_rate)
+            
+            if len(envelope) > attack + release:
+                envelope[:attack] = np.linspace(0, 1, attack)
+                envelope[-release:] = np.linspace(1, 0, release)
+            
+            chord_progression[start:end] = chord_wave * envelope
+            
+            if end == len(samples):
+                break
+        
+        return chord_progression
+
+    def generate_melody(self, duration, base_freq):
+        """Generate a melodic line"""
+        # Define major scale intervals
+        major_scale = [1, 1.122, 1.260, 1.335, 1.498, 1.682, 1.887]
+        frequencies = [base_freq * interval for interval in major_scale]
+        
+        samples = np.linspace(0, duration, int(self.sample_rate * duration))
+        melody = np.zeros_like(samples)
+        
+        # Generate melody notes
+        note_duration = 0.25  # quarter note duration
+        current_time = 0
+        
+        while current_time < duration:
+            # Randomly select a frequency from the scale
+            freq = np.random.choice(frequencies)
+            
+            # Calculate note samples
+            note_samples = int(note_duration * self.sample_rate)
+            start = int(current_time * self.sample_rate)
+            end = min(start + note_samples, len(melody))
+            
+            if end <= start:
+                break
+                
+            # Generate note
+            t = np.linspace(0, note_duration, end - start)
+            note = 0.3 * np.sin(2 * np.pi * freq * t)
+            
+            # Apply envelope
+            envelope = np.ones_like(note)
+            attack = int(0.01 * self.sample_rate)
+            release = int(0.01 * self.sample_rate)
+            
+            if len(envelope) > attack + release:
+                envelope[:attack] = np.linspace(0, 1, attack)
+                envelope[-release:] = np.linspace(1, 0, release)
+            
+            melody[start:end] = note * envelope
+            current_time += note_duration
+        
+        return melody
+
+    def generate_bass_line(self, duration, base_freq):
+        """Generate a bass line"""
+        samples = np.linspace(0, duration, int(self.sample_rate * duration))
+        bass_freq = base_freq / 2  # One octave lower
+        
+        # Generate basic bass line
+        bass_line = 0.4 * np.sin(2 * np.pi * bass_freq * samples)
+        
+        # Add harmonics for richer sound
+        bass_line += 0.1 * np.sin(4 * np.pi * bass_freq * samples)
+        
+        return bass_line
+
+    def generate_drums(self, duration):
+        """Generate drum patterns"""
+        samples = int(self.sample_rate * duration)
+        drums = np.zeros(samples)
+        
+        # Calculate beat positions
+        beat_length = int(self.sample_rate * 60 / self.tempo)
+        
+        # Create drum sounds
+        def kick():
+            t = np.linspace(0, 0.1, int(0.1 * self.sample_rate))
+            return 0.8 * np.exp(-50 * t) * np.sin(2 * np.pi * 50 * t)
+            
+        def hihat():
+            t = np.linspace(0, 0.05, int(0.05 * self.sample_rate))
+            return 0.3 * np.exp(-200 * t) * np.random.normal(0, 1, len(t))
+            
+        def snare():
+            t = np.linspace(0, 0.1, int(0.1 * self.sample_rate))
+            noise = np.random.normal(0, 1, len(t))
+            return 0.5 * np.exp(-50 * t) * (
+                0.5 * np.sin(2 * np.pi * 200 * t) + 0.5 * noise)
+        
+        # Create basic drum patterns
+        kick_pattern = [1, 0, 0, 0, 1, 0, 0, 0]  # Basic kick pattern
+        snare_pattern = [0, 0, 1, 0, 0, 0, 1, 0]  # Basic snare pattern
+        hihat_pattern = [1, 1, 1, 1, 1, 1, 1, 1]  # Basic hihat pattern
+        
+        # Generate drum sounds
+        k = kick()
+        s = snare()
+        h = hihat()
+        
+        # Place drums in the pattern
+        pattern_length = len(kick_pattern)
+        num_patterns = int(np.ceil(duration * self.tempo / 60 / 2))
+        
+        for i in range(num_patterns):
+            for j in range(pattern_length):
+                position = i * beat_length * pattern_length + j * beat_length
+                if position + len(k) > len(drums):
+                    break
+                    
+                if kick_pattern[j]:
+                    drums[position:position + len(k)] += k
+                if snare_pattern[j]:
+                    drums[position:position + len(s)] += s
+                if hihat_pattern[j]:
+                    drums[position:position + len(h)] += h
+        
+        return librosa.util.normalize(drums) * 0.3
+
+    def load_vocals(self):
+        try:
+            file_path = filedialog.askopenfilename(
+                filetypes=[("Audio files", "*.mp3 *.wav")])
+            
+            if not file_path:
+                return
+
+            self.status_var.set("Loading audio file...")
+            self.update()
+
+            # Load audio with librosa
+            self.vocal_data, self.sample_rate = librosa.load(
+                file_path, sr=44100, mono=True, duration=30)  # Limit to 30 seconds
+            
+            # Normalize audio
+            self.vocal_data = librosa.util.normalize(self.vocal_data)
+            
+            self.update_visualization()
+            self.status_var.set("Vocals loaded successfully")
+            
+        except Exception as e:
+            self.status_var.set(f"Error loading file: {str(e)}")
+
+    def generate_music(self):
+        if self.vocal_data is None:
+            self.status_var.set("Please load vocals first")
+            return
+
+        try:
+            self.status_var.set("Generating music...")
+            self.update()
+
+            duration = len(self.vocal_data) / self.sample_rate
+            base_freq = 440  # A4 note
+
+            # Generate components
+            chords = self.create_chord_progression(duration, base_freq)
+            melody = self.generate_melody(duration, base_freq)
+            bass = self.generate_bass_line(duration, base_freq)
+            drums = self.generate_drums(duration)
+
+            # Mix components
+            self.music_data = (
+                0.4 * chords +
+                0.3 * melody +
+                0.4 * bass +
+                0.3 * drums
+            )
+
+            # Ensure music_data matches vocal_data length
+            if len(self.music_data) > len(self.vocal_data):
+                self.music_data = self.music_data[:len(self.vocal_data)]
+            elif len(self.music_data) < len(self.vocal_data):
+                self.music_data = np.pad(self.music_data, 
+                                       (0, len(self.vocal_data) - len(self.music_data)))
+
+            # Normalize
+            self.music_data = librosa.util.normalize(self.music_data)
+
+            # Mix with vocals
+            self.full_mix = 0.7 * self.vocal_data + 0.3 * self.music_data
+            self.full_mix = librosa.util.normalize(self.full_mix)
+
+            self.update_visualization()
+            self.status_var.set("Music generated successfully")
+
+        except Exception as e:
+            self.status_var.set(f"Error generating music: {str(e)}")
+
+    def play_audio(self, audio_data):
+        if audio_data is None:
+            return
+
+        try:
+            # Create temporary file
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+            temp_path = temp_file.name
+            
+            # Write audio data to temporary file
+            sf.write(temp_path, audio_data, self.sample_rate)
+            
+            # Stop any currently playing audio
+            pygame.mixer.music.stop()
+            
+            # Load and play the new audio
+            pygame.mixer.music.load(temp_path)
+            pygame.mixer.music.play()
+            
+            # Clean up temp file in a separate thread
+            def cleanup():
+                while pygame.mixer.music.get_busy():
+                    pygame.time.wait(100)
+                os.unlink(temp_path)
+            
+            threading.Thread(target=cleanup).start()
+            
+        except Exception as e:
+            self.status_var.set(f"Error playing audio: {str(e)}")
+
+    def play_full_mix(self):
+        self.play_audio(self.full_mix)
+
+    def play_vocals(self):
+        self.play_audio(self.vocal_data)
+
+    def play_music(self):
+        self.play_audio(self.music_data)
+
+    def stop_playback(self):
+        pygame.mixer.music.stop()
+
+    def save_mix(self):
+        if self.full_mix is None:
+            self.status_var.set("Generate music first")
+            return
+            
+        try:
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".wav",
+                filetypes=[("WAV files", "*.wav")])
+                
+            if file_path:
+                sf.write(file_path, self.full_mix, self.sample_rate)
+                self.status_var.set("Mix saved successfully")
+                
+        except Exception as e:
+            self.status_var.set(f"Error saving mix: {str(e)}")
+
+    def update_visualization(self):
+        self.ax1.clear()
+        self.ax2.clear()
+        
+        if self.vocal_data is not None:
+            self.ax1.plot(self.vocal_data[:1000])
+            self.ax1.set_title("Vocal Waveform")
+            self.ax1.grid(True)
+        
+        if self.music_data is not None:
+            self.ax2.plot(self.music_data[:1000])
+            self.ax2.set_title("Generated Music Waveform")
+            self.ax2.grid()
+            def update_visualization(self):
+                self.ax1.clear()
+        self.ax2.clear()
+        if self.vocal_data is not None:
+            self.ax1.plot(self.vocal_data[:1000])
+            self.ax1.set_title("Vocal Waveform")
+            self.ax1.grid(True)
+        
+        if self.music_data is not None:
+            self.ax2.plot(self.music_data[:1000])
+            self.ax2.set_title("Generated Music Waveform")
+            self.ax2.grid(True)
+        
+        self.canvas.draw()
+
+    def __del__(self):
+        """Cleanup when the application closes"""
+        try:
+            pygame.mixer.quit()
+        except:
+            pass
+
+if __name__ == "__main__":
+    try:
+        app = MusicGenerator()
+        app.mainloop()
+    except Exception as e:
+        print(f"Error starting application: {str(e)}")
+    app = MusicGenerator()
+    app.mainloop()
